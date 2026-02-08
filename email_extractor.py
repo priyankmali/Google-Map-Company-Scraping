@@ -15,9 +15,31 @@ EMAIL_REGEX = re.compile(
     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 )
 
-# Phone number regex - supports multiple formats
+# Phone number regex - stricter to avoid coordinates/decimals/RGB
+# Matches:
+# +1-234-567-8900
+# (123) 456-7890
+# 123-456-7890
+# 123 456 7890
+# +91 98765 43210
 PHONE_REGEX = re.compile(
-    r"(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{1,4}\)?[-.\s]?)?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}"
+    r"""
+    # Optional international prefix (+ followed by 1-3 digits)
+    (?:(?:\+|00)\d{1,3}[-\s.]?)?
+    
+    # Optional area code in parentheses
+    (?:\(?\d{2,4}\)?[-\s.]?)
+    
+    # First group of digits (3-4 digits)
+    \d{3,4}
+    
+    # Separator
+    [-\s.]?
+    
+    # Last group of digits (3-9 digits)
+    \d{3,9}
+    """,
+    re.VERBOSE
 )
 
 HEADERS = {
@@ -69,13 +91,52 @@ def extract_emails_and_phones_from_site(website):
                         emails.add(email)
             
             # Extract phone numbers
-            found_phones = PHONE_REGEX.findall(r.text)
-            for phone in found_phones:
-                # Clean and validate phone number
+            # Use a slightly more permissive regex for findall, then validate strictly
+            potential_phones = re.findall(r'(?:\+?\d{1,3}[-\s.]?)?(?:\(?\d{3}\)?[-\s.]?)?\d{3}[-\s.]?\d{4,6}', r.text)
+            
+            for phone in potential_phones:
+                # Clean the phone number
                 phone_clean = phone.strip()
-                # Only keep if it looks like a valid phone (at least 7 digits)
+                
+                # Exclude common non-phone patterns
+                if any(x in phone_clean for x in [",", ";", "<", ">", "{", "}"]):
+                    continue
+                
+                # Exclude RGB values or coordinate-like patterns
+                # RGB values often appear as (255 255 255) -> splits into 3 parts
+                parts = re.split(r'[-\s.]', phone_clean)
+                parts = [p for p in parts if p.isdigit()]
+                
+                # If it looks like RGB (3 parts of 1-3 digits each), ignore
+                if len(parts) == 3 and all(len(p) <= 3 for p in parts):
+                     # Likely RGB or date/time
+                     continue
+
+                # Exclude sequences that start with 0 unless they are area codes (usually 0 followed by 2-3 digits)
+                # Or if it starts with 0 but is very short
+                if phone_clean.startswith("0") and len(phone_clean) < 10:
+                    continue
+
+                # Exclude pure numbers that look like years or small integers
+                if phone_clean.replace(" ", "").isdigit() and len(phone_clean.replace(" ", "")) < 10:
+                    continue
+                
+                # Exclude coordinate-like patterns (e.g. 0.914062)
+                if "." in phone_clean and phone_clean.replace(".", "").isdigit():
+                     # If it looks like a float, skip it
+                     if len(phone_clean.split(".")[1]) > 0:
+                        continue
+
+                # Count actual digits
                 digits_only = re.sub(r"\D", "", phone_clean)
-                if 7 <= len(digits_only) <= 15:  # Valid phone number range
+                
+                # Valid phone numbers usually have 10-15 digits
+                if 10 <= len(digits_only) <= 15:
+                    
+                     # Additional check for repeated digits (e.g. 1111111111) which are often placeholders
+                    if len(set(digits_only)) < 3:
+                        continue
+                        
                     phones.add(phone_clean)
 
         except Exception as e:
