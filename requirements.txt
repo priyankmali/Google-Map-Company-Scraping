@@ -1,5 +1,6 @@
 streamlit
-selenium
-openpyxl
 pandas
+selenium
+webdriver-manager
 requests
+openpyxl

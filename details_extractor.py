@@ -14,24 +14,41 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import os
+
 # ============= CREATE DRIVER ================
 def create_driver(headless=True):
     """Create and configure Chrome WebDriver"""
     options = webdriver.ChromeOptions()
+    
+    # Standard headless options
     if headless:
         options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-    else:
-        options.add_argument("--start-maximized")
     
-    # Performance optimizations
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    
-    return webdriver.Chrome(options=options)
+
+    try:
+        # Try using webdriver_manager (best for local & some cloud envs)
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"WebDriver Manager failed: {e}. Trying system default...")
+        
+        # Fallback: Try using system installed chromedriver (common in Streamlit Cloud/Linux)
+        # Streamlit Cloud often has chromedriver in /usr/bin/chromedriver or similar
+        try:
+             return webdriver.Chrome(options=options)
+        except Exception as e2:
+             print(f"System default driver failed: {e2}")
+             raise e2
 
 
 def wait_for_results(driver, timeout=25):
