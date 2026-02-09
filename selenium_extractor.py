@@ -50,24 +50,32 @@ def _get_selenium_driver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--blink-settings=imagesEnabled=false") # Disable images for speed
     
     # Suppress logging
     chrome_options.add_argument("--log-level=3")
     
+    # 1. Try System Driver First (Preferred for Streamlit Cloud / CI/CD)
+    # Streamlit Cloud installs chromium-driver which matches the installed chromium.
     try:
-        # Try using webdriver_manager (best for local)
-        service = Service(ChromeDriverManager().install())
-        return webdriver.Chrome(service=service, options=chrome_options)
-    except Exception as e:
-        # Fallback: Try using system installed chromedriver (common in Streamlit Cloud/Linux)
-        # Streamlit Cloud installs chromium-driver in /usr/bin/ or in PATH
-        print(f"WebDriver Manager failed: {e}. Trying system default...")
+        return webdriver.Chrome(options=chrome_options)
+    except Exception as e_system:
+        # print(f"System driver not found or failed: {e_system}. Trying WebDriverManager...")
+        
+        # 2. Fallback to WebDriverManager (Preferred for Local Dev)
         try:
-            return webdriver.Chrome(options=chrome_options)
-        except Exception as e2:
-            print(f"System default driver also failed: {e2}")
-            raise e2
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = Service(ChromeDriverManager().install())
+            return webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e_manager:
+            print(f"Both system driver and WebDriverManager failed.")
+            print(f"System Error: {e_system}")
+            print(f"Manager Error: {e_manager}")
+            raise e_manager
 
 def extract_emails_and_phones_with_selenium(website):
     """
