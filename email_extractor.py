@@ -70,7 +70,8 @@ def extract_emails_and_phones_from_site(website):
         "/about-us",
         "/get-in-touch",
         "/reach-us",
-        "/team"
+        "/team",
+        "Contact-us",
     ]
 
     for path in paths:
@@ -141,6 +142,17 @@ def extract_emails_and_phones_from_site(website):
 
         except Exception as e:
             continue
+
+    # If no emails found via requests, try Selenium as fallback
+    if not emails:
+        # print(f"No emails found for {website} via requests, trying Selenium...")
+        try:
+            from selenium_extractor import extract_emails_and_phones_with_selenium
+            sel_emails, sel_phones = extract_emails_and_phones_with_selenium(website)
+            emails.update(sel_emails)
+            phones.update(sel_phones)
+        except Exception as e:
+            print(f"Selenium fallback failed for {website}: {e}")
 
     return list(emails), list(phones)
 
