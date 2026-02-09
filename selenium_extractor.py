@@ -44,9 +44,20 @@ SELENIUM_SEMAPHORE = BoundedSemaphore(3)
 
 def _get_selenium_driver():
     """Create and return a configured Chrome driver"""
+    # Load environment variables
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    
+    # Check for headless mode in env, default to True if not specified or invalid
+    headless_env = os.getenv("HEADLESS", "True").lower()
+    is_headless = headless_env in ("true", "1", "yes")
+
     chrome_options = Options()
-    # Use new headless mode for better compatibility
-    chrome_options.add_argument("--headless=new") 
+    if is_headless:
+        # Use new headless mode for better compatibility
+        chrome_options.add_argument("--headless=new") 
+    
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")

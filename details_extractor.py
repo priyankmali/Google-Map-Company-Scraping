@@ -23,6 +23,16 @@ def create_driver(headless=True):
     """Create and configure Chrome WebDriver"""
     options = webdriver.ChromeOptions()
     
+    # Load environment variables
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    # Check for headless mode in env
+    # If env var exists, it OVERRIDES the function argument
+    if os.getenv("HEADLESS"):
+         headless_env = os.getenv("HEADLESS", "True").lower()
+         headless = headless_env in ("true", "1", "yes")
+
     # Standard headless options
     if headless:
         options.add_argument("--headless=new")
@@ -227,7 +237,8 @@ def scrape_single_location(args):
     """Scrape Google Maps for a single keyword-location combination"""
     keyword, location = args
 
-    driver = create_driver(headless=False)  # Visible for Google Maps scraping
+    # MUST be headless for Streamlit Cloud / Server environments
+    driver = create_driver(headless=True)  
     driver.get("https://www.google.com/maps")
     time.sleep(4)
 
