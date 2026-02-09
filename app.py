@@ -14,7 +14,10 @@ from email_extractor import run_email_extraction
 
 
 st.set_page_config(page_title="Google Maps Scraper", layout="wide")
-st.title("Google Maps Scraper – Complete Pipeline")
+st.markdown(
+    "<h1>Google Maps Scraper -<span style='color:yellow;'> KOLI INFOTECH</span></h1>",
+    unsafe_allow_html=True
+)
 
 # Initialize session state
 if 'scraped_data' not in st.session_state:
@@ -46,7 +49,7 @@ def run_scraper_parallel():
 
         workers = min(3, len(tasks))
         
-        st.write(f"⚙️ Running with {workers} parallel Chrome drivers")
+        st.write(f"🔍 Finding company in {place_input}")
 
         with Pool(processes=workers) as pool:
             results = pool.map(scrape_single_location, tasks)
@@ -60,13 +63,12 @@ def run_scraper_parallel():
                     global_places.add(r["place_url"])
                     all_records.append(r)
 
-        st.success("✅ Parallel search completed")
+        st.success("✅ Search completed")
 
         df = pd.DataFrame(all_records)
         st.session_state.scraped_data = df
 
         st.write("### 📊 Summary")
-        st.write("Total searches:", len(locations))
         st.write("Total Company Found:", len(global_places))
 
     except Exception as e:
@@ -84,7 +86,7 @@ def run_detail_extraction_ui():
     total_places = len(df_places)
 
     st.info(f"🔍 Extracting details for {total_places} companies...")
-    st.success("⚡ Using optimized parallel processing with headless browsers for faster extraction!")
+    st.success("⚡ processing extraction!")
 
     progress = st.progress(0)
     status_text = st.empty()
@@ -95,6 +97,17 @@ def run_detail_extraction_ui():
         progress_callback=lambda p: progress.progress(p),
         status_callback=lambda s: status_text.text(s)
     )
+    
+    # Filter out companies with no website
+    if df_detailed is not None and not df_detailed.empty:
+        # Remove None, NaN, and empty strings
+        df_detailed = df_detailed[df_detailed['website'].notna() & (df_detailed['website'] != "")]
+        
+        # Display filtering result
+        removed_count = total_places - len(df_detailed)
+        if removed_count > 0:
+            st.warning(f"⚠️ Filtered out {removed_count} companies with no website.")
+        st.success(f"✅ Retained {len(df_detailed)} companies with websites.")
     
     st.session_state.detailed_data = df_detailed
 
@@ -112,8 +125,7 @@ def run_detail_extraction_ui():
 def run_email_extraction_ui(df_input):
     """UI wrapper for email extraction"""
     total = len(df_input)
-    st.info(f"📧 Extracting emails and phone numbers from {total} websites...")
-    st.success("⚡ Using optimized parallel processing for faster extraction!")
+    st.info(f"⚡ Extracting emails and phone numbers from {total} websites...")
 
     progress = st.progress(0)
     status_text = st.empty()

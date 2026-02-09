@@ -89,8 +89,6 @@ def scroll_until_end(driver, pause=2, max_idle=5, max_scrolls=50):
         href = item.get_attribute("href")
         if href:
             links.add(href)
-    
-    print(f"Initial links collected: {len(links)}")
 
     while True:
         scroll_count += 1
