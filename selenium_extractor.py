@@ -45,7 +45,8 @@ SELENIUM_SEMAPHORE = BoundedSemaphore(3)
 def _get_selenium_driver():
     """Create and return a configured Chrome driver"""
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # Use new headless mode for better compatibility
+    chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
@@ -54,8 +55,19 @@ def _get_selenium_driver():
     # Suppress logging
     chrome_options.add_argument("--log-level=3")
     
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+    try:
+        # Try using webdriver_manager (best for local)
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=chrome_options)
+    except Exception as e:
+        # Fallback: Try using system installed chromedriver (common in Streamlit Cloud/Linux)
+        # Streamlit Cloud installs chromium-driver in /usr/bin/ or in PATH
+        print(f"WebDriver Manager failed: {e}. Trying system default...")
+        try:
+            return webdriver.Chrome(options=chrome_options)
+        except Exception as e2:
+            print(f"System default driver also failed: {e2}")
+            raise e2
 
 def extract_emails_and_phones_with_selenium(website):
     """
