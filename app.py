@@ -10,7 +10,7 @@ import io
 
 # Import our custom modules
 from details_extractor import scrape_single_location, run_detail_extraction
-from email_extractor import run_email_extraction
+from email_extractor_async import run_email_extraction_async
 
 
 st.set_page_config(page_title="Google Maps Scraper", layout="wide")
@@ -130,11 +130,19 @@ def run_email_extraction_ui(df_input):
     progress = st.progress(0)
     status_text = st.empty()
     
-    # Run extraction with callbacks
-    df_emails = run_email_extraction(
+    # Run async extraction directly with default production settings.
+    df_emails = run_email_extraction_async(
         df_input,
         progress_callback=lambda p: progress.progress(p),
-        status_callback=lambda s: status_text.text(s)
+        status_callback=lambda s: status_text.text(s),
+        max_concurrent_sites=15,
+        max_connections=60,
+        request_timeout=10,
+        per_site_timeout=40,
+        homepage_timeout=20,
+        max_concurrent_selenium_fallbacks=2,
+        selenium_timeout=10,
+        selenium_fallback=False
     )
     
     st.session_state.email_data = df_emails

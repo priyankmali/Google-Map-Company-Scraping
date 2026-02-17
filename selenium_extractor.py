@@ -5,14 +5,11 @@ Selenium Email and Phone Number Extractor Module
 
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import BoundedSemaphore
-import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from urllib.parse import urljoin
+from selenium.common.exceptions import TimeoutException
 
 # Email and Phone regex (Copied from email_extractor.py to be standalone)
 EMAIL_REGEX = re.compile(
@@ -41,6 +38,9 @@ PHONE_REGEX = re.compile(
 
 # Limit concurrent Selenium instances to avoid resource exhaustion
 SELENIUM_SEMAPHORE = BoundedSemaphore(3)
+PAGE_LOAD_TIMEOUT = 12
+SCRIPT_TIMEOUT = 12
+RENDER_WAIT_SECONDS = 1.2
 
 def _get_selenium_driver():
     """Create and return a configured Chrome driver"""
@@ -54,6 +54,7 @@ def _get_selenium_driver():
     is_headless = headless_env in ("true", "1", "yes")
 
     chrome_options = Options()
+    chrome_options.page_load_strategy = "eager"
     if is_headless:
         # Use new headless mode for better compatibility
         chrome_options.add_argument("--headless=new") 
@@ -72,7 +73,10 @@ def _get_selenium_driver():
     # 1. Try System Driver First (Preferred for Streamlit Cloud / CI/CD)
     # Streamlit Cloud installs chromium-driver which matches the installed chromium.
     try:
-        return webdriver.Chrome(options=chrome_options)
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+        driver.set_script_timeout(SCRIPT_TIMEOUT)
+        return driver
     except Exception as e_system:
         # print(f"System driver not found or failed: {e_system}. Trying WebDriverManager...")
         
@@ -81,7 +85,10 @@ def _get_selenium_driver():
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
-            return webdriver.Chrome(service=service, options=chrome_options)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.set_script_timeout(SCRIPT_TIMEOUT)
+            return driver
         except Exception as e_manager:
             print(f"Both system driver and WebDriverManager failed.")
             print(f"System Error: {e_system}")
@@ -104,16 +111,19 @@ def _extract_logic(website):
     try:
         driver = _get_selenium_driver()
         
-        # Common paths to check
-        paths = ["", "/contact", "/contact-us", "/about", "/about-us"]
+        # Keep fallback lightweight to avoid long-tail stalls.
+        paths = ["", "/contact", "/about"]
         
         for path in paths:
             try:
                 url = urljoin(website, path)
-                driver.get(url)
+                try:
+                    driver.get(url)
+                except TimeoutException:
+                    continue
                 
                 # Wait a bit for JS to execute
-                time.sleep(3)
+                time.sleep(RENDER_WAIT_SECONDS)
                 
                 page_source = driver.page_source
                 
@@ -123,6 +133,10 @@ def _extract_logic(website):
                     if not email.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
                         if not any(x in email.lower() for x in ["example.com", "test@", "noreply@"]):
                             emails.add(email)
+
+                # If homepage already has an email, skip scanning fallback pages.
+                if path == "" and emails:
+                    break
                 
                 # Extract phone numbers
                 potential_phones = re.findall(r'(?:\+?\d{1,3}[-\s.]?)?(?:\(?\d{3}\)?[-\s.]?)?\d{3}[-\s.]?\d{4,6}', page_source)
@@ -145,6 +159,9 @@ def _extract_logic(website):
                     if 10 <= len(digits_only) <= 15:
                         if len(set(digits_only)) < 3: continue
                         phones.add(phone_clean)
+
+                if emails and phones:
+                    break
                         
             except Exception as e:
                 # print(f"Error checking {url}: {e}")
@@ -157,4 +174,3 @@ def _extract_logic(website):
             driver.quit()
             
     return list(emails), list(phones)
-
