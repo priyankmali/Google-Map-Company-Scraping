@@ -14,7 +14,6 @@ import time
 
 
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 import os
 
 # ============= CREATE DRIVER ================
@@ -35,6 +34,7 @@ def create_driver(headless=True):
     # Standard headless options
     if headless:
         options.add_argument("--headless=new")
+    options.binary_location = os.getenv("CHROME_BINARY", "/usr/bin/chromium")
     
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
@@ -44,21 +44,36 @@ def create_driver(headless=True):
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
-    # Prefer system driver first to avoid network fetches for driver metadata.
-    try:
-        service = Service(executable_path=os.getenv("CHROMEDRIVER_PATH", "chromedriver"))
-        return webdriver.Chrome(service=service, options=options)
-    except Exception as e_system:
-        print(f"System default driver failed: {e_system}. Trying WebDriverManager...")
+    # Prefer system drivers first to avoid stale cached chromedriver mismatches.
+    candidate_drivers = [
+        os.getenv("CHROMEDRIVER_PATH"),
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        "chromedriver",
+    ]
+    candidate_drivers = [p for p in candidate_drivers if p]
 
-        # Fallback for local environments where driver may not be installed.
+    last_error = None
+    for driver_path in candidate_drivers:
+        try:
+            service = Service(executable_path=driver_path)
+            return webdriver.Chrome(service=service, options=options)
+        except Exception as exc:
+            last_error = exc
+
+    # Optional local fallback only when explicitly enabled.
+    if os.getenv("ALLOW_WDM_FALLBACK", "0").lower() in {"1", "true", "yes"}:
         try:
             os.environ.setdefault("WDM_DISABLE_STATS", "1")
+            from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
             return webdriver.Chrome(service=service, options=options)
-        except Exception as e_wdm:
-            print(f"WebDriver Manager failed: {e_wdm}")
-            raise e_wdm
+        except Exception as exc:
+            last_error = exc
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No usable ChromeDriver found.")
 
 
 def wait_for_results(driver, timeout=25):

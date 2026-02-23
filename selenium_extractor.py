@@ -77,6 +77,7 @@ def _get_selenium_driver():
 
     chrome_options = Options()
     chrome_options.page_load_strategy = "eager"
+    chrome_options.binary_location = os.getenv("CHROME_BINARY", "/usr/bin/chromium")
     if is_headless:
         # Use new headless mode for better compatibility
         chrome_options.add_argument("--headless=new") 
@@ -92,17 +93,28 @@ def _get_selenium_driver():
     # Suppress logging
     chrome_options.add_argument("--log-level=3")
     
-    # 1. Try system driver first to avoid network metadata lookups.
-    try:
-        service = Service(executable_path=os.getenv("CHROMEDRIVER_PATH", "chromedriver"))
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-        driver.set_script_timeout(SCRIPT_TIMEOUT)
-        return driver
-    except Exception as e_system:
-        # print(f"System driver not found or failed: {e_system}. Trying WebDriverManager...")
-        
-        # 2. Fallback to WebDriverManager (Preferred for Local Dev)
+    # Try system drivers first to avoid stale cached chromedriver mismatches.
+    candidate_drivers = [
+        os.getenv("CHROMEDRIVER_PATH"),
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        "chromedriver",
+    ]
+    candidate_drivers = [p for p in candidate_drivers if p]
+
+    last_error = None
+    for driver_path in candidate_drivers:
+        try:
+            service = Service(executable_path=driver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.set_script_timeout(SCRIPT_TIMEOUT)
+            return driver
+        except Exception as exc:
+            last_error = exc
+
+    # Optional local fallback only when explicitly enabled.
+    if os.getenv("ALLOW_WDM_FALLBACK", "0").lower() in {"1", "true", "yes"}:
         try:
             from webdriver_manager.chrome import ChromeDriverManager
             os.environ.setdefault("WDM_DISABLE_STATS", "1")
@@ -111,11 +123,12 @@ def _get_selenium_driver():
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.set_script_timeout(SCRIPT_TIMEOUT)
             return driver
-        except Exception as e_manager:
-            print(f"Both system driver and WebDriverManager failed.")
-            print(f"System Error: {e_system}")
-            print(f"Manager Error: {e_manager}")
-            raise e_manager
+        except Exception as exc:
+            last_error = exc
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No usable ChromeDriver found.")
 
 def extract_emails_and_phones_with_selenium(website):
     """
