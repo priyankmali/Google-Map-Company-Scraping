@@ -208,7 +208,9 @@ with tab1:
     if uploaded_file is not None:
         df_uploaded = pd.read_excel(uploaded_file)
         st.write("**Uploaded file preview:**")
-        st.dataframe(df_uploaded.head(), width="stretch")
+        preview_df = df_uploaded.head().copy()
+        preview_df.index = preview_df.index + 1
+        st.dataframe(preview_df, width="stretch")
         
         if st.button("🚀 Extract Emails from Uploaded File"):
             run_email_extraction_ui(df_uploaded)
