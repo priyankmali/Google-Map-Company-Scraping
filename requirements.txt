@@ -6,3 +6,4 @@ requests
 aiohttp
 openpyxl
 python-dotenv
+beautifulsoup4

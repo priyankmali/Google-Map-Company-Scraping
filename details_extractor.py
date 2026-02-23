@@ -44,20 +44,21 @@ def create_driver(headless=True):
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
+    # Prefer system driver first to avoid network fetches for driver metadata.
     try:
-        # Try using webdriver_manager (best for local & some cloud envs)
-        service = Service(ChromeDriverManager().install())
+        service = Service(executable_path=os.getenv("CHROMEDRIVER_PATH", "chromedriver"))
         return webdriver.Chrome(service=service, options=options)
-    except Exception as e:
-        print(f"WebDriver Manager failed: {e}. Trying system default...")
-        
-        # Fallback: Try using system installed chromedriver (common in Streamlit Cloud/Linux)
-        # Streamlit Cloud often has chromedriver in /usr/bin/chromedriver or similar
+    except Exception as e_system:
+        print(f"System default driver failed: {e_system}. Trying WebDriverManager...")
+
+        # Fallback for local environments where driver may not be installed.
         try:
-             return webdriver.Chrome(options=options)
-        except Exception as e2:
-             print(f"System default driver failed: {e2}")
-             raise e2
+            os.environ.setdefault("WDM_DISABLE_STATS", "1")
+            service = Service(ChromeDriverManager().install())
+            return webdriver.Chrome(service=service, options=options)
+        except Exception as e_wdm:
+            print(f"WebDriver Manager failed: {e_wdm}")
+            raise e_wdm
 
 
 def wait_for_results(driver, timeout=25):
@@ -139,7 +140,8 @@ def scroll_until_end(driver, pause=2, max_idle=5, max_scrolls=50):
 
 def extract_place_details(place_url, retry_count=0, max_retries=1):
     """Extract details (name, address, phone, website) from a Google Maps place URL"""
-    driver = create_driver(headless=True)
+    driver = None
+    should_retry = False
 
     data = {
         "place_url": place_url,
@@ -152,6 +154,7 @@ def extract_place_details(place_url, retry_count=0, max_retries=1):
     }
 
     try:
+        driver = create_driver(headless=True)
         driver.get(place_url)
         
         # Smart wait for page load
@@ -210,9 +213,7 @@ def extract_place_details(place_url, retry_count=0, max_retries=1):
         
         # Retry if no name found (indicates page didn't load)
         if data["name"] is None and retry_count < max_retries:
-            driver.quit()
-            time.sleep(2)
-            return extract_place_details(place_url, retry_count + 1, max_retries)
+            should_retry = True
 
     except Exception as e:
         data["status"] = "failed"
@@ -220,12 +221,18 @@ def extract_place_details(place_url, retry_count=0, max_retries=1):
         
         # Retry on failure
         if retry_count < max_retries:
-            driver.quit()
-            time.sleep(2)
-            return extract_place_details(place_url, retry_count + 1, max_retries)
+            should_retry = True
 
     finally:
-        driver.quit()
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    if should_retry:
+        time.sleep(2)
+        return extract_place_details(place_url, retry_count + 1, max_retries)
 
     return data
 
@@ -234,12 +241,14 @@ def scrape_single_location(args):
     """Scrape Google Maps for a single keyword-location combination"""
     keyword, location = args
 
-    # MUST be headless for Streamlit Cloud / Server environments
-    driver = create_driver(headless=True)  
-    driver.get("https://www.google.com/maps")
-    time.sleep(4)
+    driver = None
 
     try:
+        # MUST be headless for Streamlit Cloud / Server environments
+        driver = create_driver(headless=True)
+        driver.get("https://www.google.com/maps")
+        time.sleep(4)
+
         query = f"{keyword} in {location}"
 
         search_box = driver.find_element(By.NAME, "q")
@@ -259,7 +268,11 @@ def scrape_single_location(args):
         ]
 
     finally:
-        driver.quit()
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 def run_detail_extraction(df_places, progress_callback=None, status_callback=None):

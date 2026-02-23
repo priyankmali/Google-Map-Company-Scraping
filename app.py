@@ -1,5 +1,5 @@
 """
-Google Maps Scraper - Complete Pipeline
+Company Scraper - Complete Pipeline
 Main Streamlit Application
 """
 
@@ -10,12 +10,12 @@ import io
 
 # Import our custom modules
 from details_extractor import scrape_single_location, run_detail_extraction
-from email_extractor_async import run_email_extraction_async
+from scratch_extractor_async import run_email_extraction_bs4_async
 
 
-st.set_page_config(page_title="Google Maps Scraper", layout="wide")
+st.set_page_config(page_title="Ventexa: Business Data Extractor", layout="wide")
 st.markdown(
-    "<h1>Google Maps Scraper -<span style='color:yellow;'> KOLI INFOTECH</span></h1>",
+    "<h1>Business Data Extractor -<span style='color:#4FE7C0;'> VENTEXA</span></h1>",
     unsafe_allow_html=True
 )
 
@@ -28,31 +28,43 @@ if 'email_data' not in st.session_state:
     st.session_state.email_data = None
 
 # Create tabs for better organization
-tab1, tab2 = st.tabs(["📤 Upload Excel for Email Extraction", "🗺️ Scrape from Google Maps"])
+tab1, tab2 = st.tabs(["📤 Upload Excel for Email Extraction", "🗺️ Scrape Companies"])
 
 with tab1:
     st.write("### Upload your company details Excel file to extract emails directly")
     st.write("Your Excel file should contain columns like: name, address, phone, website")
     
 with tab2:
-    st.write("### Start fresh by scraping companies from Google Maps")
-    keyword = st.text_input("Business keyword", "Software company")
-    place_input = st.text_input("Location", "Surat")
+    st.write("### Data Extractor Form")
+    keyword = st.text_input("Business keyword", "IT Software company")
+    place_input = st.text_input("Location", "Ontario")
 
 
 # ================= MAIN SCRAPER =================
 def run_scraper_parallel():
-    """Scrape Google Maps for company URLs"""
+    """Scrape company URLs"""
     try:
         locations = [l.strip() for l in place_input.split(",") if l.strip()]
+        if not locations:
+            st.warning("Please enter at least one valid location.")
+            return
+
         tasks = [(keyword, loc) for loc in locations]
-
         workers = min(3, len(tasks))
-        
-        st.write(f"🔍 Finding company in {place_input}")
+        progress = st.progress(0)
+        status_text = st.empty()
+        status_text.info(f"🔍 Starting scrape for {len(tasks)} location(s)...")
 
-        with Pool(processes=workers) as pool:
-            results = pool.map(scrape_single_location, tasks)
+        results = []
+        with st.spinner("Scraping companies... this may take some time"):
+            with Pool(processes=workers) as pool:
+                for completed, location_records in enumerate(
+                    pool.imap_unordered(scrape_single_location, tasks),
+                    start=1
+                ):
+                    results.append(location_records)
+                    progress.progress(completed / len(tasks))
+                    status_text.info(f"🔄 Processed {completed}/{len(tasks)} location(s)")
 
         global_places = set()
         all_records = []
@@ -63,7 +75,8 @@ def run_scraper_parallel():
                     global_places.add(r["place_url"])
                     all_records.append(r)
 
-        st.success("✅ Search completed")
+        status_text.success("✅ Scraping completed")
+        progress.progress(1.0)
 
         df = pd.DataFrame(all_records)
         st.session_state.scraped_data = df
@@ -123,33 +136,64 @@ def run_detail_extraction_ui():
 
 # ================= EMAIL EXTRACTION WRAPPER =================
 def run_email_extraction_ui(df_input):
-    """UI wrapper for email extraction"""
+    """UI wrapper for production email + services extraction."""
     total = len(df_input)
-    st.info(f"⚡ Extracting emails and phone numbers from {total} websites...")
+    st.info(f"⚡ Extracting emails, services, and missing contacts from {total} websites...")
 
     progress = st.progress(0)
     status_text = st.empty()
-    
-    # Run async extraction directly with default production settings.
-    df_emails = run_email_extraction_async(
-        df_input,
-        progress_callback=lambda p: progress.progress(p),
-        status_callback=lambda s: status_text.text(s),
-        max_concurrent_sites=15,
-        max_connections=60,
-        request_timeout=10,
-        per_site_timeout=40,
-        homepage_timeout=20,
-        max_concurrent_selenium_fallbacks=2,
-        selenium_timeout=10,
-        selenium_fallback=False
-    )
+    counter = {"done": 0}
+
+    def on_progress(p):
+        progress.progress(p)
+
+    def _format_company_status(raw_message):
+        msg = raw_message.strip()
+        if "->" in msg:
+            name = msg.split("->", 1)[0].strip()
+        else:
+            name = msg
+        lowered = msg.lower()
+        if any(x in lowered for x in ["timeout", "request_failed", "invalid_website", "no_emails"]):
+            return f"⚠️ {name}"
+        return f"✅ {name}"
+
+    def on_status(message):
+        is_retry_stage = message.startswith("[retry-stage]")
+        is_retry_row = message.startswith("[retry ")
+
+        if is_retry_stage:
+            status_text.info("🔄 Retrying remaining companies...")
+            return
+
+        if is_retry_row:
+            close_idx = message.find("]")
+            retry_msg = message[close_idx + 2:] if close_idx != -1 else message
+            status_text.info(f"🔄 {_format_company_status(retry_msg)}")
+            return
+
+        counter["done"] = min(counter["done"] + 1, total)
+        status_text.info(_format_company_status(message))
+
+    with st.spinner("Loading... extracting company details"):
+        df_emails = run_email_extraction_bs4_async(
+            df_input,
+            progress_callback=on_progress,
+            status_callback=on_status,
+            chunk_size=25,
+            max_concurrent_sites=20,
+            max_connections=80,
+            request_timeout=12,
+            retry_no_emails_with_selenium=True,
+            retry_no_services_with_selenium=True,
+            include_debug_columns=False,
+        )
     
     st.session_state.email_data = df_emails
 
-    st.success("✅ Email and phone extraction completed!")
+    st.success("✅ Extraction completed!")
 
-    st.write("### 📧 Companies with Contact Information")
+    st.write("### 📧 Extracted Company Contacts")
     st.dataframe(
         df_emails,
         width="stretch",
