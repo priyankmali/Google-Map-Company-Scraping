@@ -7,11 +7,16 @@ import streamlit as st
 from multiprocessing import Pool
 import pandas as pd
 import io
+import time
+import threading
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 # Import our custom modules
 from details_extractor import scrape_single_location, run_detail_extraction
 from scratch_extractor_async import run_email_extraction_bs4_async
 
+EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 st.set_page_config(page_title="Ventexa: Business Data Extractor", layout="wide")
 st.markdown(
@@ -26,6 +31,8 @@ if 'detailed_data' not in st.session_state:
     st.session_state.detailed_data = None
 if 'email_data' not in st.session_state:
     st.session_state.email_data = None
+if 'email_job' not in st.session_state:
+    st.session_state.email_job = None
 
 # Create tabs for better organization
 tab1, tab2 = st.tabs(["📤 Upload Excel for Email Extraction", "🗺️ Scrape Companies"])
@@ -54,7 +61,7 @@ def run_scraper_parallel():
         progress = st.progress(0)
         status_text = st.empty()
         status_text.info(f"🔍 Starting scrape for {len(tasks)} location(s)...")
-
+        
         results = []
         with st.spinner("Scraping companies... this may take some time"):
             with Pool(processes=workers) as pool:
@@ -134,71 +141,207 @@ def run_detail_extraction_ui():
     )
 
 
-# ================= EMAIL EXTRACTION WRAPPER =================
-def run_email_extraction_ui(df_input):
-    """UI wrapper for production email + services extraction."""
-    total = len(df_input)
-    st.info(f"⚡ Extracting emails, services, and missing contacts from {total} websites...")
+def _build_smart_extractor_config(total):
+    """Single smart profile tuned by batch size."""
+    if total >= 1000:
+        return {
+            "chunk_size": 50,
+            "max_concurrent_sites": 36,
+            "max_connections": 180,
+            "request_timeout": 12,
+            "retry_no_emails_with_selenium": True,
+            "max_selenium_retry_concurrent_sites": 14,
+            "retry_no_services_with_selenium": True,
+            "max_selenium_service_retry_concurrent_sites": 8,
+            "stop_on_first_email": False,
+            "include_debug_columns": False,
+        }
+    if total >= 500:
+        return {
+            "chunk_size": 40,
+            "max_concurrent_sites": 30,
+            "max_connections": 140,
+            "request_timeout": 12,
+            "retry_no_emails_with_selenium": True,
+            "max_selenium_retry_concurrent_sites": 12,
+            "retry_no_services_with_selenium": True,
+            "max_selenium_service_retry_concurrent_sites": 6,
+            "stop_on_first_email": False,
+            "include_debug_columns": False,
+        }
+    return {
+        "chunk_size": 30,
+        "max_concurrent_sites": 24,
+        "max_connections": 100,
+        "request_timeout": 12,
+        "retry_no_emails_with_selenium": True,
+        "max_selenium_retry_concurrent_sites": 10,
+        "retry_no_services_with_selenium": True,
+        "max_selenium_service_retry_concurrent_sites": 6,
+        "stop_on_first_email": False,
+        "include_debug_columns": False,
+    }
 
-    progress = st.progress(0)
-    status_text = st.empty()
+
+def _format_company_status(raw_message):
+    msg = raw_message.strip()
+    if "->" in msg:
+        name = msg.split("->", 1)[0].strip()
+    else:
+        name = msg
+    lowered = msg.lower()
+    if any(x in lowered for x in ["timeout", "request_failed", "invalid_website", "no_emails"]):
+        return f"⚠️ {name}"
+    return f"✅ {name}"
+
+
+def _run_email_extraction_worker(df_input, job_state, lock, extractor_config):
+    total = len(df_input)
     counter = {"done": 0}
 
     def on_progress(p):
-        progress.progress(p)
-
-    def _format_company_status(raw_message):
-        msg = raw_message.strip()
-        if "->" in msg:
-            name = msg.split("->", 1)[0].strip()
-        else:
-            name = msg
-        lowered = msg.lower()
-        if any(x in lowered for x in ["timeout", "request_failed", "invalid_website", "no_emails"]):
-            return f"⚠️ {name}"
-        return f"✅ {name}"
+        with lock:
+            job_state["progress"] = max(0.0, min(1.0, float(p)))
 
     def on_status(message):
         is_retry_stage = message.startswith("[retry-stage]")
         is_retry_row = message.startswith("[retry ")
 
         if is_retry_stage:
-            status_text.info("🔄 Retrying remaining companies...")
+            match = re.search(r"Retrying\s+(\d+)", message)
+            with lock:
+                job_state["retry_done"] = 0
+                job_state["retry_total"] = int(match.group(1)) if match else 0
+                job_state["last_status"] = f"🔄 {message.replace('[retry-stage] ', '')}"
             return
 
         if is_retry_row:
             close_idx = message.find("]")
+            retry_prefix = message[:close_idx + 1] if close_idx != -1 else "[retry]"
             retry_msg = message[close_idx + 2:] if close_idx != -1 else message
-            status_text.info(f"🔄 {_format_company_status(retry_msg)}")
+            match = re.match(r"\[retry\s+(\d+)/(\d+)\]", retry_prefix)
+            with lock:
+                if match:
+                    job_state["retry_done"] = int(match.group(1))
+                    job_state["retry_total"] = int(match.group(2))
+                job_state["last_status"] = f"🔄 {retry_prefix} {_format_company_status(retry_msg)}"
             return
 
-        counter["done"] = min(counter["done"] + 1, total)
-        status_text.info(_format_company_status(message))
+        if not is_retry_stage and not is_retry_row:
+            counter["done"] = min(counter["done"] + 1, total)
+            with lock:
+                job_state["done"] = counter["done"]
+                job_state["last_status"] = f"{counter['done']}/{total} {_format_company_status(message)}"
 
-    with st.spinner("Loading... extracting company details"):
-        df_emails = run_email_extraction_bs4_async(
-            df_input,
-            progress_callback=on_progress,
-            status_callback=on_status,
-            chunk_size=25,
-            max_concurrent_sites=20,
-            max_connections=80,
-            request_timeout=12,
-            retry_no_emails_with_selenium=True,
-            retry_no_services_with_selenium=True,
-            include_debug_columns=False,
-        )
-    
-    st.session_state.email_data = df_emails
-
-    st.success("✅ Extraction completed!")
-
-    st.write("### 📧 Extracted Company Contacts")
-    st.dataframe(
-        df_emails,
-        width="stretch",
-        hide_index=True
+    return run_email_extraction_bs4_async(
+        df_input,
+        progress_callback=on_progress,
+        status_callback=on_status,
+        **extractor_config,
     )
+
+
+def start_email_extraction_job(df_input, source_label):
+    if df_input is None or len(df_input) == 0:
+        st.warning("No input data available for email extraction.")
+        return
+
+    existing_job = st.session_state.email_job
+    if existing_job and existing_job.get("state") == "running":
+        st.warning("An extraction job is already running.")
+        return
+
+    total = len(df_input)
+    config = _build_smart_extractor_config(total)
+    job_lock = threading.Lock()
+    job_state = {
+        "state": "running",
+        "source": source_label,
+        "total": total,
+        "done": 0,
+        "retry_done": 0,
+        "retry_total": 0,
+        "progress": 0.0,
+        "last_status": f"Starting smart extraction for {total} websites...",
+        "started_at": time.time(),
+        "finished_at": None,
+        "lock": job_lock,
+    }
+
+    future = EMAIL_EXECUTOR.submit(
+        _run_email_extraction_worker,
+        df_input.copy(),
+        job_state,
+        job_lock,
+        config,
+    )
+    job_state["future"] = future
+    st.session_state.email_job = job_state
+
+
+def render_email_job_status():
+    job = st.session_state.email_job
+    if not job:
+        return
+
+    lock = job["lock"]
+    future = job["future"]
+
+    if job["state"] == "running" and future.done():
+        try:
+            result = future.result()
+            with lock:
+                job["state"] = "done"
+                job["progress"] = 1.0
+                job["done"] = job["total"]
+                job["last_status"] = "✅ Extraction completed."
+                job["finished_at"] = time.time()
+            st.session_state.email_data = result
+        except Exception as exc:
+            with lock:
+                job["state"] = "failed"
+                job["last_status"] = f"❌ Extraction failed: {exc}"
+                job["finished_at"] = time.time()
+
+    with lock:
+        state = job["state"]
+        progress = job["progress"]
+        done = job["done"]
+        total = job["total"]
+        retry_done = job.get("retry_done", 0)
+        retry_total = job.get("retry_total", 0)
+        last_status = job["last_status"]
+        started_at = job["started_at"]
+
+    st.write("---")
+    st.write("### ⚙️ Smart Extraction Job")
+    if state == "running":
+        if retry_total > 0:
+            st.info(f"Running: {done}/{total} | Retry: {retry_done}/{retry_total}")
+        else:
+            st.info(f"Running: {done}/{total}")
+    elif state == "done":
+        if retry_total > 0:
+            st.success(f"Completed: {done}/{total} | Retry: {retry_done}/{retry_total}")
+        else:
+            st.success(f"Completed: {done}/{total}")
+    else:
+        st.error(last_status)
+
+    st.progress(progress)
+    st.caption(last_status)
+    elapsed = int(time.time() - started_at)
+    st.caption(f"Elapsed: {elapsed}s")
+
+    if state == "running":
+        if hasattr(st, "autorefresh"):
+            st.autorefresh(interval=2000, key="smart_job_refresh")
+        else:
+            time.sleep(2)
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
 
 
 # ================= UPLOAD SECTION (IN TAB1) =================
@@ -213,7 +356,7 @@ with tab1:
         st.dataframe(preview_df, width="stretch")
         
         if st.button("🚀 Extract Emails from Uploaded File"):
-            run_email_extraction_ui(df_uploaded)
+            start_email_extraction_job(df_uploaded, source_label="uploaded_file")
 
 # ================= BUTTONS IN TAB2 =================
 with tab2:
@@ -250,10 +393,21 @@ with tab2:
         
         # Extract emails from current data
         if st.button("🚀 Extract Emails from Current Data"):
-            run_email_extraction_ui(st.session_state.detailed_data)
+            start_email_extraction_job(st.session_state.detailed_data, source_label="current_data")
+
+# Show current smart extraction job status
+render_email_job_status()
 
 # Show email download button if emails are extracted
 if st.session_state.email_data is not None:
+    st.write("---")
+    st.write("### 📧 Extracted Company Contacts")
+    st.dataframe(
+        st.session_state.email_data,
+        width="stretch",
+        hide_index=True
+    )
+
     output_email = io.BytesIO()
     with pd.ExcelWriter(output_email, engine='openpyxl') as writer:
         st.session_state.email_data.to_excel(writer, index=False, sheet_name='Companies with Emails')

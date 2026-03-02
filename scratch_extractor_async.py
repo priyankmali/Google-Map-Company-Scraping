@@ -321,6 +321,7 @@ async def _extract_emails_one_site(
     service_paths,
     *,
     selenium_fallback=False,
+    selenium_collect_services=True,
     bs4_enabled=True,
     stop_on_first_email=False,
 ):
@@ -445,14 +446,26 @@ async def _extract_emails_one_site(
         result["status"] = "request_failed"
         result["error"] = str(exc)
 
-    if selenium_fallback and (not found_emails or not found_services) and result["status"] == "success":
+    selenium_needed = (
+        not found_emails
+        or (selenium_collect_services and not found_services)
+    )
+    if selenium_fallback and selenium_needed and result["status"] == "success":
         try:
-            from selenium_extractor import extract_emails_and_services_with_selenium
             for base_site in website_candidates:
-                sel_emails, sel_services = await asyncio.to_thread(
-                    extract_emails_and_services_with_selenium,
-                    base_site
-                )
+                if selenium_collect_services:
+                    from selenium_extractor import extract_emails_and_services_with_selenium
+                    sel_emails, sel_services = await asyncio.to_thread(
+                        extract_emails_and_services_with_selenium,
+                        base_site
+                    )
+                else:
+                    from selenium_extractor import extract_emails_with_selenium
+                    sel_emails = await asyncio.to_thread(
+                        extract_emails_with_selenium,
+                        base_site
+                    )
+                    sel_services = []
                 if sel_emails:
                     found_emails.update(sel_emails)
                 if sel_services:
@@ -460,8 +473,13 @@ async def _extract_emails_one_site(
                     service_sources.add("selenium")
                 if sel_emails or sel_services:
                     result["selenium_fallback_used"] = True
-                if found_emails and found_services:
-                    break
+                # Stop early once retry objective is met.
+                if selenium_collect_services:
+                    if found_emails and found_services:
+                        break
+                else:
+                    if found_emails:
+                        break
         except Exception:
             pass
 
@@ -499,6 +517,7 @@ async def _run_email_extraction_bs4_async(
     request_timeout=12,
     paths=None,
     selenium_fallback=False,
+    selenium_collect_services=True,
     bs4_enabled=True,
     stop_on_first_email=False,
 ):
@@ -535,6 +554,7 @@ async def _run_email_extraction_bs4_async(
                 email_paths,
                 service_paths,
                 selenium_fallback=selenium_fallback,
+                selenium_collect_services=selenium_collect_services,
                 bs4_enabled=bs4_enabled,
                 stop_on_first_email=stop_on_first_email,
             )
@@ -630,8 +650,10 @@ def run_email_extraction_bs4_async(
     paths=None,
     retry_no_emails_with_selenium=True,
     max_selenium_retry_rows=None,
+    max_selenium_retry_concurrent_sites=6,
     retry_no_services_with_selenium=True,
     max_selenium_service_retry_rows=None,
+    max_selenium_service_retry_concurrent_sites=4,
     stop_on_first_email=False,
     include_debug_columns=False,
 ):
@@ -686,11 +708,12 @@ def run_email_extraction_bs4_async(
             progress_callback=None,
             status_callback=retry_status_callback,
             chunk_size=chunk_size,
-            max_concurrent_sites=max_concurrent_sites,
+            max_concurrent_sites=max(1, min(max_concurrent_sites, max_selenium_retry_concurrent_sites)),
             max_connections=max_connections,
             request_timeout=request_timeout,
             paths=paths,
             selenium_fallback=True,
+            selenium_collect_services=False,
             bs4_enabled=False,
             stop_on_first_email=stop_on_first_email,
         )
@@ -736,11 +759,12 @@ def run_email_extraction_bs4_async(
                     progress_callback=None,
                     status_callback=service_retry_status_callback,
                     chunk_size=chunk_size,
-                    max_concurrent_sites=max_concurrent_sites,
+                    max_concurrent_sites=max(1, min(max_concurrent_sites, max_selenium_service_retry_concurrent_sites)),
                     max_connections=max_connections,
                     request_timeout=request_timeout,
                     paths=paths,
                     selenium_fallback=True,
+                    selenium_collect_services=True,
                     bs4_enabled=False,
                     stop_on_first_email=stop_on_first_email,
                 )
