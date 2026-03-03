@@ -15,6 +15,27 @@ import time
 
 from selenium.webdriver.chrome.service import Service
 import os
+import shutil
+
+
+def _resolve_chrome_binary():
+    """Return a valid Chrome/Chromium binary path when available."""
+    env_binary = os.getenv("CHROME_BINARY")
+    candidates = [
+        env_binary,
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
 
 # ============= CREATE DRIVER ================
 def create_driver(headless=True):
@@ -34,7 +55,10 @@ def create_driver(headless=True):
     # Standard headless options
     if headless:
         options.add_argument("--headless=new")
-    options.binary_location = os.getenv("CHROME_BINARY", "/usr/bin/chromium")
+
+    chrome_binary = _resolve_chrome_binary()
+    if chrome_binary:
+        options.binary_location = chrome_binary
     
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")

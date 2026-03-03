@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Import our custom modules
 from details_extractor import scrape_single_location, run_detail_extraction
-from scratch_extractor_async import run_email_extraction_bs4_async
+from email_services_extractor_async import run_email_extraction_bs4_async
 
 EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -60,10 +60,10 @@ def run_scraper_parallel():
         workers = min(3, len(tasks))
         progress = st.progress(0)
         status_text = st.empty()
-        status_text.info(f"🔍 Starting scrape for {len(tasks)} location(s)...")
+        status_text.info(f"🔍 Finding Companies in {len(tasks)} location(s)...")
         
         results = []
-        with st.spinner("Scraping companies... this may take some time"):
+        with st.spinner("Finding Companies... this may take some time"):
             with Pool(processes=workers) as pool:
                 for completed, location_records in enumerate(
                     pool.imap_unordered(scrape_single_location, tasks),

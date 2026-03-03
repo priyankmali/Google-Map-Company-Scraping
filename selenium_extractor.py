@@ -14,6 +14,8 @@ from selenium.webdriver.chrome.service import Service
 from urllib.parse import urljoin
 from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
+import os
+import shutil
 
 # Email and Phone regex (Copied from email_extractor.py to be standalone)
 EMAIL_REGEX = re.compile(
@@ -64,11 +66,30 @@ PAGE_LOAD_TIMEOUT = 12
 SCRIPT_TIMEOUT = 12
 RENDER_WAIT_SECONDS = 0.7
 
+def _resolve_chrome_binary():
+    """Return a valid Chrome/Chromium binary path when available."""
+    env_binary = os.getenv("CHROME_BINARY")
+    candidates = [
+        env_binary,
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
 def _get_selenium_driver():
     """Create and return a configured Chrome driver"""
     # Load environment variables
     from dotenv import load_dotenv
-    import os
     load_dotenv()
     
     # Check for headless mode in env, default to True if not specified or invalid
@@ -77,7 +98,9 @@ def _get_selenium_driver():
 
     chrome_options = Options()
     chrome_options.page_load_strategy = "eager"
-    chrome_options.binary_location = os.getenv("CHROME_BINARY", "/usr/bin/chromium")
+    chrome_binary = _resolve_chrome_binary()
+    if chrome_binary:
+        chrome_options.binary_location = chrome_binary
     if is_headless:
         # Use new headless mode for better compatibility
         chrome_options.add_argument("--headless=new") 
